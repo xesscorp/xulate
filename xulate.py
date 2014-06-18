@@ -1,13 +1,13 @@
-import argparse
 import sys
+import argparse
 import re
 
-"""Translate a UCF file with XuLA pin loc constraints to those for a XuLA2.
+"""Translate a UCF file with XuLA/XuLA2 pin loc constraints to those for a XuLA2/XuLA.
 
-	This program accepts a XuLA UCF file via the standard input and
-	outputs a UCF file for the XuLA2 on the standard output.
+	This program accepts either a XuLA or XuLA2 UCF file and
+	converts it to a XuLA2 or XuLA UCF file.
 
-	xulate < [XuLA.ucf] > [XuLA2.ucf]
+	xulate file.ucf
 """
 
 # Table associating the XuLA pins to the XuLA2 pins.
@@ -94,19 +94,22 @@ xula_translate_tbl = (\
 )
 
 parser = argparse.ArgumentParser(description='Translate a XuLA UCF file to XuLA2.')
-parser.add_argument('-infile', nargs='?', metavar='XuLA.ucf', help='UCF file for XuLA board', type=argparse.FileType('r'), const=sys.stdin, default=sys.stdin)
-parser.add_argument('-outfile', nargs='?', metavar='XuLA2.ucf', help='UCF file for XuLA2 board', type=argparse.FileType('w'), const=sys.stdout, default=sys.stdout)
+parser.add_argument('-infile', nargs='?', help='UCF file to convert', type=argparse.FileType('r'), default=sys.stdin)
+parser.add_argument('-outfile', nargs='?', help='UCF file to hold conversion', type=argparse.FileType('w'), default=sys.stdout)
+parser.add_argument('-iofile', nargs='?', help='UCF file to be converted in-place', )
 args = parser.parse_args()
 
 # Convert XuLA-XuLA2 pin association list into dictionaries.
 xula_to_xula2_tbl = {}
 xula2_to_xula_tbl = {}
 for (xula_pin, xula2_pin) in xula_translate_tbl:
+    # Create look-up table to convert XuLA pins to XuLA2 pins.
     if xula_pin != '???':
         if xula_pin.lower() in xula_to_xula2_tbl:
             raise Exception("Duplicate pin in XuLA table: " + xula_pin)
         xula_to_xula2_tbl[xula_pin.lower()] = xula2_pin.lower()
         xula_to_xula2_tbl[xula_pin.upper()] = xula2_pin.upper()
+    # Create look-up table to convert XuLA2 pins to XuLA pins.
     if xula2_pin != '???':
         if xula2_pin.lower() in xula2_to_xula_tbl:
             raise Exception("Duplicate pin in XuLA2 table: " + xula2_pin)
@@ -114,16 +117,50 @@ for (xula_pin, xula2_pin) in xula_translate_tbl:
         xula2_to_xula_tbl[xula2_pin.upper()] = xula_pin.upper()
 
 # Get UCF file.
-ucf = args.infile.read()
-
-# Find lines containing "LOC = pin" and replace pin with a new value.
-def pin_exchange( loc_line ):
-    new_pin = xula_to_xula2_tbl[loc_line.group(2)]
-    return loc_line.group(1) + new_pin + loc_line.group(3)
+if args.iofile is not None:
+    infile = open(args.iofile, 'r')
+    ucf = infile.readlines()
+    infile.close()
+else:
+    ucf = args.infile.readlines()
 
 loc = r'(\s* loc \s* = \s*) (\w*) (\s* [;|])'
 loc_re = re.compile(loc, re.IGNORECASE | re.VERBOSE)
+
+# Determine if this is a XuLA or XuLA2 pin.
+def pin_check( pin ):
+    if pin in xula_to_xula2_tbl and pin not in xula2_to_xula_tbl:
+        return 1, 0
+    if pin in xula2_to_xula_tbl and pin not in xula_to_xula2_tbl:
+        return 0, 1
+    return 0, 0
+
+# Determine if the input file contains XuLA or XuLA2 pin constraints.
+xula_pin_cnt = 0
+xula2_pin_cnt = 0
+for line in ucf:
+    m = loc_re.search(line)
+    if m is not None:
+        inc = pin_check(m.group(2))
+        xula_pin_cnt += inc[0]
+        xula2_pin_cnt += inc[1]
+if xula_pin_cnt > xula2_pin_cnt:
+    translate_tbl = xula_to_xula2_tbl
+else:
+    translate_tbl = xula2_to_xula_tbl
+    
+# Find lines containing "LOC = pin" and replace pin with a new value.
+def pin_exchange( loc_line ):
+    new_pin = translate_tbl[loc_line.group(2)]
+    return loc_line.group(1) + new_pin + loc_line.group(3)
+
+ucf = ''.join(ucf)    
 new_ucf = loc_re.sub(pin_exchange, ucf)
 
 # Store new UCF.
-print >>args.outfile, new_ucf
+if args.iofile is not None:
+    outfile = open(args.iofile, 'w')
+    print >>outfile, new_ucf
+    outfile.close()
+else:
+    print >>args.outfile, new_ucf
